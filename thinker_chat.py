@@ -11,7 +11,7 @@ import threading
 import signal # To handle Ctrl+C gracefully with the spinner
 import atexit # To ensure screen restoration on exit
 
-DEFAULT_MODEL_PATH = "MoE-4bit"
+DEFAULT_MODEL_PATH = "mlx-community/Qwen3-30B-A3B-4bit"
 DEFAULT_MAX_TOKENS = 16000 # Increased default max tokens
 DEFAULT_TEMP = 0.6
 DEFAULT_SEED = 0

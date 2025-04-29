@@ -134,4 +134,13 @@ cython_debug/
 .Spotlight-V100
 .Trashes
 ehthumbs.db
-Thumbs.db 
+Thumbs.db
+
+# MLX Model Directories (add specific paths as needed)
+0.6b/
+MoE/
+MoE-4bit/
+MoE-8bit/
+
+# Backup files
+*copy.py 
