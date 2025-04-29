@@ -5,7 +5,7 @@ A simple command-line interface for interacting with MLX large language models, 
 ## Installation
 
 ```bash
-pip install .
+pip install git+https://github.com/mark-lord/thinker-chat-cli-mlx
 ```
 
 ## Usage
