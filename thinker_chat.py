@@ -1,17 +1,14 @@
 # thinker-chat.py
 import argparse
-import mlx.core as mx
-import mlx.nn as nn
-from mlx_lm.utils import load
-from mlx_lm.generate import stream_generate
-from mlx_lm.sample_utils import make_sampler
 import sys
 import time
 import threading
 import signal # To handle Ctrl+C gracefully with the spinner
 import atexit # To ensure screen restoration on exit
+import io # For suppressing output
+import os # For managing environment variables
 
-DEFAULT_MODEL_PATH = "mlx-community/Qwen3-30B-A3B-4bit"
+DEFAULT_MODEL_PATH = "mark-arts/qwen3-30b-a3b-DWQ-3bit-gs128"
 DEFAULT_MAX_TOKENS = 16000 # Increased default max tokens
 DEFAULT_TEMP = 0.6
 DEFAULT_SEED = 0
@@ -105,6 +102,63 @@ def signal_handler(sig, frame):
 
 # Register the signal handler for SIGINT (Ctrl+C)
 signal.signal(signal.SIGINT, signal_handler)
+
+
+# --- Function to load model in a separate thread and suppress output ---
+def load_model_threaded_and_quietly(args, result_container):
+    """Loads the model and tokenizer in a separate thread, suppressing stdout."""
+    # --- Delayed Imports (for the thread) ---
+    import mlx.core as mx
+    # import mlx.nn as nn # Not strictly needed for load, but often related
+    from mlx_lm.utils import load
+
+    original_stdout_fd = sys.stdout.fileno()
+    original_stderr_fd = sys.stderr.fileno()
+
+    # Save original FDs
+    saved_stdout_fd = os.dup(original_stdout_fd)
+    saved_stderr_fd = os.dup(original_stderr_fd)
+
+    # Suppress Hugging Face Hub progress bars (environment variable)
+    original_hf_progress_env = os.environ.get("HF_HUB_DISABLE_PROGRESS_BARS")
+    os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] = "1"
+
+    dev_null_fd = os.open(os.devnull, os.O_WRONLY)
+
+    model = None
+    tokenizer = None
+    error = None
+
+    try:
+        # Redirect stdout and stderr to /dev/null
+        os.dup2(dev_null_fd, original_stdout_fd)
+        os.dup2(dev_null_fd, original_stderr_fd)
+
+        mx.random.seed(args.seed)
+        model, tokenizer = load(args.model)
+
+    except Exception as e:
+        error = e
+    finally:
+        # Restore stdout and stderr
+        os.dup2(saved_stdout_fd, original_stdout_fd)
+        os.dup2(saved_stderr_fd, original_stderr_fd)
+
+        # Close the duplicated FDs and dev_null
+        os.close(saved_stdout_fd)
+        os.close(saved_stderr_fd)
+        os.close(dev_null_fd)
+
+        # Restore Hugging Face Hub progress bar environment variable
+        if original_hf_progress_env is None:
+            if "HF_HUB_DISABLE_PROGRESS_BARS" in os.environ:
+                del os.environ["HF_HUB_DISABLE_PROGRESS_BARS"]
+        else:
+            os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] = original_hf_progress_env
+
+    result_container['model'] = model
+    result_container['tokenizer'] = tokenizer
+    result_container['error'] = error
 
 
 # --- ASCII Art Animation ---
@@ -221,31 +275,53 @@ def main_cli():
 
     args = parse_args() # Parse arguments inside the function
 
-    mx.random.seed(args.seed)
-    print(f"Loading model from {args.model}...")
-    try:
-        model, tokenizer = load(args.model)
-        print("Model loaded successfully.") # Confirmation before screen switch
-    except Exception as e:
-        print(f"\nError loading model: {e}")
-        print("Please ensure the model path is correct and the model files exist.")
-        sys.exit(1) # Exit before entering alt screen
-
-    # --- Enter Alternate Screen ---
-    # This happens only after successful model load
+    # --- Enter Alternate Screen (Happens First) ---
     enter_alternate_screen()
 
-    # --- Animated Header ---
+    # --- Prepare and start model loading in a background thread ---
+    load_results = {} # To store model, tokenizer, and error from the thread
+    model_loader_thread = threading.Thread(
+        target=load_model_threaded_and_quietly,
+        args=(args, load_results),
+        daemon=True # Ensures thread exits if main program exits
+    )
+    model_loader_thread.start()
+
+    # --- Animated Header (runs while model loads in background) ---
+    # The print statements that were here are moved to after model loading
     animate_ascii_art(THINKER_CHAT_ART)
 
-    # --- Print remaining info ---
-    # print("=" * 10) # Replaced by animation
-    # print(" Starting Thinker Chat ") # Replaced by animation
-    # print("=" * 10) # Replaced by animation
+    # --- Wait for model loading to complete ---
+    model_loader_thread.join() # Wait for the thread to finish
+
+    # --- Process model loading results ---
+    model = load_results.get('model')
+    tokenizer = load_results.get('tokenizer')
+    load_error = load_results.get('error')
+
+    if load_error or not model or not tokenizer:
+        # Error messages will print on the alternate screen.
+        # atexit will handle screen restoration.
+        # animate_ascii_art already prints a newline, so no initial \n needed here.
+        print(f"Error loading model: {load_error or 'Unknown error during model loading.'}")
+        print("Please ensure the model path is correct and the model files exist.")
+        sys.stdout.flush()
+        sys.exit(1) # Exit, atexit registered function will run
+
+    # --- Model loaded successfully. Now print initial operational messages ---
+    # animate_ascii_art prints a separator and a newline, so these should appear after it.
     print("Enter 'q' or 'quit' to exit. Enter '/clear' to reset the chat.")
     print("Model:", args.model)
     print(f"Max Tokens: {args.max_tokens}, Temp: {args.temp}, Seed: {args.seed}")
     print("-" * 10)
+    sys.stdout.flush() # Ensure these messages are displayed
+
+    # --- Delayed Imports for Chat Loop Functionality (after model loading) ---
+    import mlx.core as mx # Needed for mx.array
+    from mlx_lm.generate import stream_generate
+    from mlx_lm.sample_utils import make_sampler
+    # Note: mlx.nn is not directly used in the main loop but often related.
+    # If other mx functionalities are added later, ensure their imports are also here or global.
 
     history = []
 
